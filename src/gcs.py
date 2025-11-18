@@ -6,7 +6,7 @@ import time
 
 MULT = 2.5
 
-INC = 10
+INC = 30
 MAX = 100
 MIN = -100
 
@@ -45,13 +45,15 @@ class GCS(tk.Tk):
     def stop(self):
         self.thrust = 0
         self.rudder = 0
-
+        self.send_cmd()
+    def send_cmd(self):
+        cmd = f'$CMD,{self.thrust:+04d},{self.rudder:+04d}\n'
+        print(cmd)
+        self.sik_port.write(cmd.encode())
     def update(self):
         if (time.time() - self.last_press) > 5:
             self.stop()
-        cmd = f'CMD,{self.thrust:+04d},{self.rudder:+04d}\n'
-        print(cmd)
-        self.sik_port.write(cmd.encode())
+            self.last_press = time.time()
         self.timer = self.after(500,self.update)
 
 
@@ -71,6 +73,7 @@ class GCS(tk.Tk):
             exit()
         else:
             self.stop()
+        self.send_cmd()
     
 
     def read_sik(self):
