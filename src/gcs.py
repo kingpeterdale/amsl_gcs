@@ -6,6 +6,10 @@ import time
 
 MULT = 2.5
 
+INC = 10
+MAX = 100
+MIN = -100
+
 class GCS(tk.Tk):
     def __init__(self, *args, **kwargs):
         
@@ -20,9 +24,54 @@ class GCS(tk.Tk):
         self.sik_thread = Thread(target=self.read_sik, daemon=True)
         self.sik_thread.start()
 
-        # State
-        self.ranges = np.zeros(720,dtype=np.uint8)
+        # Events
+        self.bind('<KeyPress>', self.key_press)
+        self.last_press = time.time()
+        self.timer = self.after(500,self.update)
 
+        # State
+        self.thrust = 0
+        self.rudder = 0
+
+
+    def set_thrust(self,increase=True):
+        if increase: d=INC
+        else: d=-INC
+        self.thrust = max(MIN,min(MAX,self.thrust+d))
+    def set_rudder(self,increase=True):
+        if increase: d=INC
+        else: d=-INC
+        self.rudder = max(MIN,min(MAX,self.rudder+d))
+    def stop(self):
+        self.thrust = 0
+        self.rudder = 0
+
+    def update(self):
+        if (time.time() - self.last_press) > 5:
+            self.stop()
+        cmd = f'CMD,{self.thrust:+04d},{self.rudder:+04d}\n'
+        print(cmd)
+        self.sik_port.write(cmd.encode())
+        self.timer = self.after(500,self.update)
+
+
+    def key_press(self, event):
+        self.last_press = time.time()
+        if event.keysym == 'Up':
+            self.set_thrust(True)
+        elif event.keysym == 'Down':
+            self.set_thrust(False)
+        elif event.keysym == 'Right':
+            self.set_rudder(True)
+        elif event.keysym == 'Left':
+            self.set_rudder(False)
+        elif event.keysym == 'q':
+            self.stop()
+            time.sleep(1)
+            exit()
+        else:
+            self.stop()
+    
 
     def read_sik(self):
         while True:
