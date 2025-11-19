@@ -3,37 +3,69 @@ import serial
 from threading import Thread
 import tkinter as tk
 import time
-
-MULT = 2.5
+from PIL import Image, ImageTk
+import cv2
+from datetime import datetime
+from pathlib import Path
 
 INC = 30
 MAX = 100
 MIN = -100
 
 class GCS(tk.Tk):
+    ''' Ground Control System
+            Extends a Tkinter window
+    '''
+
     def __init__(self, *args, **kwargs):
-        
+
         # Init Tk
         tk.Tk.__init__(self, *args, **kwargs)
         self.wm_title("Laser Bot GCS")
-        self.canvas = tk.Canvas(self, bg='black', height=MULT*400, width=MULT*400)
-        self.canvas.pack()
+        self.img_laser = np.zeros((400,400),dtype=np.uint8)
+        self.tk_img_laser = ImageTk.PhotoImage(image=Image.fromarray(self.img_laser).resize((800,800),Image.LANCZOS))
+        self.label_laser = tk.Label(self, image=self.tk_img_laser)
+        self.label_laser.pack(side=tk.LEFT)
+        self.img_camera = np.zeros((400,400),dtype=np.uint8)
+        self.tk_img_camera = ImageTk.PhotoImage(image=Image.fromarray(self.img_camera))
+        self.label_camera = tk.Label(self, image=self.tk_img_camera)
+        self.label_camera.pack(side=tk.RIGHT)
 
         # Handle SiK Radio
-        self.sik_port = serial.Serial('/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_D30GKCRB-if00-port0',57600,timeout=None)
-        self.sik_thread = Thread(target=self.read_sik, daemon=True)
-        self.sik_thread.start()
+        try:
+            self.sik_port = serial.Serial('/dev/serial/by-id/usb-FTDI_FT231X_USB_UART_D30GKCRB-if00-port0',115200,timeout=None)
+            self.sik_thread = Thread(target=self.read_sik, daemon=True)
+            self.sik_thread.start()
+        except:
+            print('Could not open SiK interface')
+
+        # Camera Tracking
+        self.cap = cv2.VideoCapture(0)
+        self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+        self.aruco_params = cv2.aruco.DetectorParameters_create()
+        self.camera_thread = Thread(target=self.read_cam, daemon=True)
+        if self.cap.isOpened():
+            self.camera_thread.start()
 
         # Events
         self.bind('<KeyPress>', self.key_press)
         self.last_press = time.time()
-        self.timer = self.after(500,self.update)
+        self.timer = self.after(50,self.update)
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # Logging, data collection
+        self.logdir = f'{datetime.now():%Y%m%d_%H%M%S}'
+        Path(self.logdir).mkdir(exist_ok=True)
+        self.logfile = open(f'{self.logdir}/gcs_{datetime.now():%H%M%S}.log','w')
 
         # State
         self.thrust = 0
         self.rudder = 0
 
-
+    
+    '''
+    Utility Functions
+    '''
     def set_thrust(self,increase=True):
         if increase: d=INC
         else: d=-INC
@@ -48,17 +80,59 @@ class GCS(tk.Tk):
         self.send_cmd()
     def send_cmd(self):
         cmd = f'$CMD,{self.thrust:+04d},{self.rudder:+04d}\n'
-        print(cmd)
-        self.sik_port.write(cmd.encode())
+        try:
+            self.sik_port.write(cmd.encode())
+            print(cmd)
+        except:
+            print('Could not send cmd')
+
     def update(self):
+        ''' Update
+                Periodically refreshes the view image
+                and monitors system state
+        '''
+        # Update and scale view image
+        self.tk_img_laser = ImageTk.PhotoImage(
+                image=Image.fromarray(self.img_laser))#.resize((800,800),Image.LANCZOS))
+        self.label_laser.configure(image = self.tk_img_laser)
+
+
+        # Check camera for vessel and display
+        cv2.imwrite(f'{self.logdir}/{datetime.now():%Y%m%d_%H%M%S_%f}.jpg',self.img_camera)
+        marker_corners, marker_ids, rejected_candidates = cv2.aruco.detectMarkers(
+            self.img_camera, self.aruco_dict, parameters=self.aruco_params)
+        if marker_ids is not None:
+            for i, marker in enumerate(marker_ids):
+                status = f'{datetime.now():%Y%m%d,%H%M%S,%f},ARUCO,{i},{marker_corners[i].flatten()}\n'
+                self.logfile.write(status)
+                self.logfile.flush()
+                print(status)
+                self.img_camera = cv2.aruco.drawDetectedMarkers(self.img_camera, marker_corners, marker_ids)
+        self.tk_img_camera = ImageTk.PhotoImage(
+                image=Image.fromarray(cv2.resize(self.img_camera,
+                                                 None,fx=0.5,fy=0.5,interpolation=cv2.INTER_NEAREST)))
+        self.label_camera.configure(image = self.tk_img_camera)
+        
+        # Check watchdog timeout
         if (time.time() - self.last_press) > 5:
             self.stop()
             self.last_press = time.time()
-        self.timer = self.after(500,self.update)
+
+        # re-trigger update
+        self.timer = self.after(100,self.update)
+
+
+    def on_closing(self):
+        self.stop()
+        self.cap.release()
+        time.sleep(1)
+        self.destroy()
 
 
     def key_press(self, event):
-        self.last_press = time.time()
+        ''' Keyboard callback
+                generates state commands as needed
+        '''
         if event.keysym == 'Up':
             self.set_thrust(True)
         elif event.keysym == 'Down':
@@ -69,30 +143,45 @@ class GCS(tk.Tk):
             self.set_rudder(False)
         elif event.keysym == 'q':
             self.stop()
+            self.cap.release()
             time.sleep(1)
-            exit()
+            self.destroy()
         else:
             self.stop()
         self.send_cmd()
+        self.last_press = time.time()
     
 
     def read_sik(self):
+        ''' Serial input thread
+                monitors received data on SiK radio
+                updates view image data
+        '''
         while True:
             pkt = self.sik_port.read_until(b'\xFF',1024)
-            if len(pkt) > 1:
+            if len(pkt) == 736:
                 timestamp =pkt[:15]
+                print(len(pkt))
                 self.ranges = np.frombuffer(pkt[15:-1],dtype=np.uint8)
+                self.logfile.write(f'{datetime.now():%Y%m%d,%H%M%S,%f},LIDAR,{self.ranges}\n')
                 angles = np.linspace(np.radians(0),np.radians(360),len(self.ranges)) + np.pi
-                
-                self.canvas.delete('all')
-                self.canvas.create_oval(MULT*200-MULT*100,MULT*200-MULT*100,MULT*200+MULT*100,MULT*200+MULT*100,fill='black',outline='blue')
-                self.canvas.create_oval(MULT*200-MULT*50,MULT*200-MULT*50,MULT*200+MULT*50,MULT*200+MULT*50,fill='black',outline='blue')
-                self.canvas.create_oval(MULT*200-MULT*10 ,MULT*200-MULT*10 ,MULT*200+MULT*10 ,MULT*200+MULT*10 ,fill='black',outline='green')
-                self.canvas.create_line(MULT*200,MULT*200,MULT*200,MULT*200-MULT*10,fill='green')
-                for i in range(len(self.ranges)):
-                    dy = MULT*200 + MULT*self.ranges[i] * np.cos(angles[i])
-                    dx = MULT*200 + MULT*self.ranges[i] * np.sin(angles[i])
-                    self.canvas.create_oval(dx-1,dy-1,dx+1,dy+1,fill='red',outline='black')
+                x = 200 + self.ranges * np.cos(angles)
+                y = 200 + self.ranges * np.sin(angles)
+                x = x.astype(np.uint8)
+                y = y.astype(np.uint8)
+                self.img_laser = np.zeros((400,400),dtype=np.uint8)
+                self.img_laser[x,y] = 0xFF
+
+
+    def read_cam(self):
+        ''' Camera read thread
+        '''
+        while True:
+            ret,frame = self.cap.read()
+            if not ret:
+                continue
+            self.img_camera = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
 
 if __name__ == '__main__':
     gcs = GCS()
