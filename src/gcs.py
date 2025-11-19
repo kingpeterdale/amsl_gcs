@@ -30,6 +30,10 @@ class GCS(tk.Tk):
         self.tk_img_camera = ImageTk.PhotoImage(image=Image.fromarray(self.img_camera))
         self.label_camera = tk.Label(self, image=self.tk_img_camera)
         self.label_camera.pack(side=tk.RIGHT)
+        # Logging, data collection
+        self.logdir = f'{datetime.now():%Y%m%d_%H%M%S}'
+        Path(self.logdir).mkdir(exist_ok=True)
+        self.logfile = open(f'{self.logdir}/gcs_{datetime.now():%H%M%S}.log','w')
 
         # Handle SiK Radio
         try:
@@ -53,10 +57,6 @@ class GCS(tk.Tk):
         self.timer = self.after(50,self.update)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # Logging, data collection
-        self.logdir = f'{datetime.now():%Y%m%d_%H%M%S}'
-        Path(self.logdir).mkdir(exist_ok=True)
-        self.logfile = open(f'{self.logdir}/gcs_{datetime.now():%H%M%S}.log','w')
 
         # State
         self.thrust = 0
@@ -66,6 +66,12 @@ class GCS(tk.Tk):
     '''
     Utility Functions
     '''
+    def log_data(self, src_id, data):
+        entry = f'{datetime.now():%Y%m%d,%H%M%S,%f},{src_id},{np.array2string(data, max_line_width=np.inf,separator=',',prefix='',suffix='')[1:-1]}\n'
+        print(entry,end='')
+        self.logfile.write(entry)
+
+
     def set_thrust(self,increase=True):
         if increase: d=INC
         else: d=-INC
@@ -103,10 +109,8 @@ class GCS(tk.Tk):
             self.img_camera, self.aruco_dict, parameters=self.aruco_params)
         if marker_ids is not None:
             for i, marker in enumerate(marker_ids):
-                status = f'{datetime.now():%Y%m%d,%H%M%S,%f},ARUCO,{i},{marker_corners[i].flatten()}\n'
-                self.logfile.write(status)
                 self.logfile.flush()
-                print(status)
+                self.log_data(f'ARUCO_{marker[0]}', marker_corners[i].flatten())
                 self.img_camera = cv2.aruco.drawDetectedMarkers(self.img_camera, marker_corners, marker_ids)
         self.tk_img_camera = ImageTk.PhotoImage(
                 image=Image.fromarray(cv2.resize(self.img_camera,
@@ -161,9 +165,9 @@ class GCS(tk.Tk):
             pkt = self.sik_port.read_until(b'\xFF',1024)
             if len(pkt) == 736:
                 timestamp =pkt[:15]
-                print(len(pkt))
+                #print(len(pkt))
                 self.ranges = np.frombuffer(pkt[15:-1],dtype=np.uint8)
-                self.logfile.write(f'{datetime.now():%Y%m%d,%H%M%S,%f},LIDAR,{self.ranges}\n')
+                self.log_data('LIDAR',self.ranges.flatten())
                 angles = np.linspace(np.radians(0),np.radians(360),len(self.ranges)) + np.pi
                 x = 200 + self.ranges * np.cos(angles)
                 y = 200 + self.ranges * np.sin(angles)
