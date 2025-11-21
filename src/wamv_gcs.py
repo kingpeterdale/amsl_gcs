@@ -6,10 +6,12 @@ import time
 import logging
 from datetime import datetime
 from pathlib import Path
+import pyproj
 
 INC = 100
 MAX = 500
 MIN = -500
+TIMEOUT = 60
 
 class GCS(tk.Tk):
     ''' Ground Control System
@@ -22,7 +24,13 @@ class GCS(tk.Tk):
         tk.Tk.__init__(self, *args, **kwargs)
         self.wm_title("WAMV GCS")
         self.canvas = tk.Canvas(self, width=800, height=400, bg='black')
-        self.canvas.pack()
+        self.canvas.grid(row=0,column=0,columnspan=4)
+        self.enable = tk.Button(self, text='Enable', command = self.on_enable,bg='red')
+        self.enable.grid(row=1,column=1,columnspan=2)
+        self.stbd_slider = tk.Scale(self, from_=-1000, to=1000,orient=tk.HORIZONTAL)
+        self.stbd_slider.grid(row=2,column=1)
+        self.port_slider = tk.Scale(self, from_=-1000, to=1000,orient=tk.HORIZONTAL)
+        self.port_slider.grid(row=2,column=2)
         # Logging, data collection
         logging.basicConfig(
             handlers=[logging.FileHandler(time.strftime("%Y%m%d_%H%M%S_wamv.log",time.localtime())),logging.StreamHandler()],
@@ -45,49 +53,71 @@ class GCS(tk.Tk):
         self.last_press = time.time()
         self.timer = self.after(1000,self.update)
 
+        self.proj = pyproj.Proj(proj='utm', zone=55, ellps='WGS84',preserve_units=True)
+
         # State
+        self.enabled = False
         self.last_pos = [0.,0.]
+        self.last_xy = [0., 0.]
+        self.origin = [0., 0.]
         self.last_hdg = 0.
         self.last_port = [0, 0]
         self.last_stbd = [0, 0]
+        self.pos_mode = False
         self.thrust_sp = 0
         self.rudder_sp = 0
+        self.pos_sp = [0., 0.]
 
     
     '''
     Utility Functions
     '''
     def set_thrust(self,increase=True):
+        self.pos_mode = False
         if increase: d=INC
         else: d=-INC
         self.thrust_sp = max(MIN,min(MAX,self.thrust_sp+d))
     
 
     def set_rudder(self,increase=True):
+        self.pos_mode = False
         if increase: d=INC
         else: d=-INC
         self.rudder_sp = max(MIN,min(MAX,self.rudder_sp+d))
     
 
+    def set_hold(self):
+        # CHECK FOR VALIDITY 
+        #   GeoFence?
+
+        self.pos_mode = True
+        self.pos_sp = self.last_pos.copy()
+
+
     def stop(self):
+        self.pos_mode = False
         self.thrust_sp = 0
         self.rudder_sp = 0
         self.logger.info(f'WATCHDOG {self.thrust_sp:+04d} {self.rudder_sp:+04d}')
     
 
     def send_cmd(self):
-        cmd = f'{self.thrust_sp:4d},{self.rudder_sp:4d},{self.thrust_sp:4d},{self.rudder_sp:4d}\n'
+        if not self.enabled:
+            return
+        if self.pos_mode:
+            cmd = f'POSCMD,{self.pos_sp[0]},{self.pos_sp[1]}\n'
+        else:
+            cmd = f'{self.thrust_sp:4d},{self.rudder_sp:4d},{self.thrust_sp:4d},{self.rudder_sp:4d}\n'
         try:
-            pass
-            #self.sock.sendto(cmd.encode(),('192.168.168.200', 6000))
-            #self.logger.info('CMD: ' + cmd)
+            self.sock.sendto(cmd.encode(),('192.168.168.200', 6000))
         except:
             print('Could not send cmd')
+
 
     def update(self):
         
         # Check for timeout
-        if (time.time() - self.last_press) > 5:
+        if (time.time() - self.last_press) > TIMEOUT:
             self.stop()
             self.last_press = time.time()
         
@@ -95,8 +125,22 @@ class GCS(tk.Tk):
         self.send_cmd()
         
         # Update GUI
+        dx = 400 + self.last_xy[0] - self.origin[0]
+        dy = 200 + self.last_xy[1] - self.origin[1]
+        self.canvas.create_oval(dx-5,dy-5,dx+5,dy+5,fill='blue',outline='black')
         
         self.timer = self.after(100, self.update)
+
+    def on_enable(self):
+        if self.enabled:
+            self.enabled = False
+            self.enable.configure(bg='red')
+            self.enable.configure(text='Enable')
+        else:
+            self.enabled = True
+            self.enable.configure(bg='green')
+            self.enable.configure(text='Disable')
+        self.logger.info(f'ENABLE: {self.enabled}')
 
 
     def key_press(self, event):
@@ -111,13 +155,18 @@ class GCS(tk.Tk):
             self.set_rudder(True)
         elif event.keysym == 'Left':
             self.set_rudder(False)
+        elif event.keysym == 'h':
+            self.set_hold()
         elif event.keysym == 'q':
             self.stop()
             time.sleep(1)
             self.destroy()
         else:
             self.stop()
-        self.logger.info(f'KEY:{event.keysym} {self.thrust_sp:+04d} {self.rudder_sp:+04d}')
+        if self.pos_mode:
+            self.logger.info(f'KEY:{event.keysym} {self.pos_sp[0]} {self.pos_sp[1]}')
+        else:
+            self.logger.info(f'KEY:{event.keysym} {self.thrust_sp:+04d} {self.rudder_sp:+04d}')
         self.send_cmd()
         self.last_press = time.time()
     
@@ -126,9 +175,18 @@ class GCS(tk.Tk):
         self.logger.info('Starting WAMV read thread')
         while True:
             pkt,addr = self.sock.recvfrom(4096)
-            self.last_pkt = pkt
-            self.logger.info(pkt.decode().strip())
-
+            self.last_pkt = pkt.decode().strip()
+            self.logger.info(self.last_pkt)
+            fields = self.last_pkt.split(',')
+            if fields[0] == 'N2K':
+                self.last_pos = [float(fields[1]),float(fields[2])]
+                self.last_hdg = float(fields[4])
+                self.last_xy = self.proj(self.last_pos[1], self.last_pos[0])
+                if self.origin == [0.,0.]:
+                    self.origin = self.last_xy
+            elif fields[0] == 'HLC':
+                self.port_slider.set(int(fields[3]))
+                self.stbd_slider.set(int(fields[4]))
 
 
 if __name__ == '__main__':
