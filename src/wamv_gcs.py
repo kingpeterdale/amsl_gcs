@@ -9,8 +9,8 @@ from pathlib import Path
 import pyproj
 
 INC = 100
-MAX = 500
-MIN = -500
+MAX = 700
+MIN = -700
 TIMEOUT = 60
 
 class GCS(tk.Tk):
