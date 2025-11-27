@@ -7,10 +7,11 @@ from PIL import Image, ImageTk
 import cv2
 from datetime import datetime
 from pathlib import Path
+import os
 
-INC = 30
-MAX = 100
-MIN = -100
+INC = 50
+MAX = 1700
+MIN = 1300
 
 class GCS(tk.Tk):
     ''' Ground Control System
@@ -25,11 +26,11 @@ class GCS(tk.Tk):
         self.img_laser = np.zeros((400,400),dtype=np.uint8)
         self.tk_img_laser = ImageTk.PhotoImage(image=Image.fromarray(self.img_laser).resize((800,800),Image.LANCZOS))
         self.label_laser = tk.Label(self, image=self.tk_img_laser)
-        self.label_laser.pack(side=tk.LEFT)
+        self.label_laser.pack(side=tk.TOP)
         self.img_camera = np.zeros((400,400),dtype=np.uint8)
         self.tk_img_camera = ImageTk.PhotoImage(image=Image.fromarray(self.img_camera))
         self.label_camera = tk.Label(self, image=self.tk_img_camera)
-        self.label_camera.pack(side=tk.RIGHT)
+        self.label_camera.pack(side=tk.BOTTOM)
         # Logging, data collection
         self.logdir = f'{datetime.now():%Y%m%d_%H%M%S}'
         Path(self.logdir).mkdir(exist_ok=True)
@@ -44,7 +45,12 @@ class GCS(tk.Tk):
             print('Could not open SiK interface')
 
         # Camera Tracking
-        self.cap = cv2.VideoCapture(0)
+        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp'
+        # USB camera
+        #self.cap = cv2.VideoCapture(0)
+        # RTSP camera
+        self.cap = cv2.VideoCapture('rtsp://admin:AMCAMSL7248@192.168.168.222//Preview_01_main',cv2.CAP_FFMPEG)
+
         self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
         self.aruco_params = cv2.aruco.DetectorParameters_create()
         self.camera_thread = Thread(target=self.read_cam, daemon=True)
@@ -59,16 +65,17 @@ class GCS(tk.Tk):
         
 
         # State
-        self.thrust = 0
-        self.rudder = 0
+        self.thrust = 1500
+        self.rudder = 1500
 
     
     '''
     Utility Functions
     '''
-    def log_data(self, src_id, data):
+    def log_data(self, src_id, data, display=True):
         entry = f'{datetime.now():%Y%m%d,%H%M%S,%f},{src_id},{np.array2string(data, max_line_width=np.inf,separator=',',prefix='',suffix='')[1:-1]}\n'
-        print(entry,end='')
+        if display:
+            print(entry,end='')
         self.logfile.write(entry)
 
 
@@ -81,8 +88,8 @@ class GCS(tk.Tk):
         else: d=-INC
         self.rudder = max(MIN,min(MAX,self.rudder+d))
     def stop(self):
-        self.thrust = 0
-        self.rudder = 0
+        self.thrust = 1500
+        self.rudder = 1500
         self.send_cmd()
     def send_cmd(self):
         cmd = f'$CMD,{self.thrust:+04d},{self.rudder:+04d}\n'
@@ -114,11 +121,11 @@ class GCS(tk.Tk):
                 self.img_camera = cv2.aruco.drawDetectedMarkers(self.img_camera, marker_corners, marker_ids)
         self.tk_img_camera = ImageTk.PhotoImage(
                 image=Image.fromarray(cv2.resize(self.img_camera,
-                                                 None,fx=0.5,fy=0.5,interpolation=cv2.INTER_NEAREST)))
+                                                 None,fx=0.3,fy=0.3,interpolation=cv2.INTER_NEAREST)))
         self.label_camera.configure(image = self.tk_img_camera)
         
         # Check watchdog timeout
-        if (time.time() - self.last_press) > 5:
+        if (time.time() - self.last_press) > 6:
             self.stop()
             self.last_press = time.time()
 
@@ -167,7 +174,7 @@ class GCS(tk.Tk):
                 timestamp =pkt[:15]
                 #print(len(pkt))
                 self.ranges = np.frombuffer(pkt[15:-1],dtype=np.uint8)
-                self.log_data('LIDAR',self.ranges.flatten())
+                self.log_data('LIDAR',self.ranges.flatten(),display=False)
                 angles = np.linspace(np.radians(0),np.radians(360),len(self.ranges)) + np.pi
                 x = 200 + self.ranges * np.cos(angles)
                 y = 200 + self.ranges * np.sin(angles)
@@ -184,7 +191,7 @@ class GCS(tk.Tk):
             ret,frame = self.cap.read()
             if not ret:
                 continue
-            self.img_camera = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            self.img_camera = frame;#cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 
 if __name__ == '__main__':
