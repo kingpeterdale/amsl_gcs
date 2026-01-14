@@ -16,11 +16,3 @@ ProcessConfig = ANTLER
   
   //Run = ./moos_tst.py       @ NewConsole = false
 }
-
-ProcessConfig = ping.py
-{
-}
-
-ProcessConfig = pong.py
-{
-}

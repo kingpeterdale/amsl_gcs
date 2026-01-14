@@ -51,17 +51,18 @@ class iCamera(pymoos.comms):
                 if ret:
                     self.img_frame = frame
             else:
-                time.sleep(.1)
+                time.sleep(1)
 
 
     def run_loop(self):
         ''' Main loop. Sends out notification based on set PERIOD'''
         Thread(target=self.cam_loop, daemon=True).start()
         while True:
-            shape = self.img_frame.shape
-            self.notify('CAM_SHAPE',f'{shape[0]},{shape[1]},{shape[2]}',pymoos.time())
-            self.notify_binary('CAM_IMG', self.img_frame.tobytes(),pymoos.time())
-            self.last_update = pymoos.time()
+            if self.running:
+                shape = self.img_frame.shape
+                self.notify('CAM_SHAPE',f'{shape[0]},{shape[1]},{shape[2]}',pymoos.time())
+                self.notify_binary('CAM_IMG', self.img_frame.tobytes(),pymoos.time())
+                self.last_update = pymoos.time()
             time.sleep(PERIOD)
 
 
